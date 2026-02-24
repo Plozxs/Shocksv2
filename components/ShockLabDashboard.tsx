@@ -387,7 +387,6 @@ export default function ShockLabDashboard() {
             <p className="font-mono text-xl font-semibold uppercase tracking-[0.22em] text-accent">
               Shock Lab
             </p>
-            <p className="text-xs text-muted">Quant event analytics terminal</p>
           </div>
           <div className="flex items-center gap-3">
             <p className="text-xs text-muted">Updated {updatedLabel}</p>
