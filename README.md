@@ -1,137 +1,152 @@
 # Shock Lab
 
-Dashboard cuantitativo en **Next.js + TypeScript** para estudiar shocks de mercado (caídas/subas por umbral) y medir probabilidades/retornos posteriores por horizonte.
+Dashboard cuantitativo para estudiar shocks de mercado: dada una serie de precios diarios, detecta eventos de caída/suba por umbral y mide las distribuciones de retorno posteriores a múltiples horizontes.
 
-## Qué hace
+---
 
-- Descarga histórico **daily OHLCV** desde **Yahoo Finance**.
-- Detecta eventos por umbral (ej. `-10%` o `+10%`) con **cooldown** para evitar clusters.
-- Calcula métricas forward para `1D, 2D, 3D, 5D, 10D`:
-  - `P(Up)` + `IC 95% (Wilson)`
-  - `E[ret]`, mediana, `p10`, `p90`, worst-case
-  - `CVaR 95%`
-- Segmenta por regímenes:
-  - Trend (`slope MA200 +/-`)
-  - Vol regime (`RV20` percentiles)
-  - Volume shock (`z-score`)
-- Incluye **Today Screener** para watchlist fija (top 10) y detecta si el último día cumple evento.
-- Exporta snapshot en **PNG (16:9)** para compartir.
+## El modelo matemático
+
+### 1. Retorno diario
+
+Para una serie de precios de cierre $c_0, c_1, \ldots, c_T$, el retorno close-to-close es:
+
+$$r_t = \frac{c_t}{c_{t-1}} - 1$$
+
+El modo alternativo *low-to-prev-close* usa $\text{low}_t$ en lugar de $c_t$ para capturar el peor punto intradía:
+
+$$r_t^{\text{low}} = \frac{\text{low}_t}{c_{t-1}} - 1$$
+
+### 2. Definición de shock
+
+Un shock ocurre en el día $t$ si el retorno supera el umbral $\theta$ en la dirección elegida:
+
+$$\text{evento}_t = \begin{cases} 1 & \text{si } r_t \leq -\theta \quad (\text{caída}) \\ 1 & \text{si } r_t \geq +\theta \quad (\text{suba}) \\ 0 & \text{si no} \end{cases}, \quad \theta = \frac{|\text{thresholdPct}|}{100}$$
+
+Para evitar que eventos consecutivos (cluster) dominen la muestra, se aplica un **cooldown de $k$ días**: detectado un evento en $t_i$, el próximo evento posible es $t > t_i + k$.
+
+### 3. Retornos forward
+
+Para cada evento en $t_i$, el retorno a horizonte $h$ es:
+
+$$R_{i,h} = \frac{c_{t_i + h}}{c_{t_i}} - 1$$
+
+Estos son los datos centrales del estudio: la distribución empírica de $\{R_{i,h}\}_{i=1}^{n_h}$ para cada horizonte $h \in \{1, 2, 3, 5, 10\}$.
+
+### 4. Tasa de acierto y su incertidumbre
+
+La probabilidad empírica de subida a horizonte $h$ es:
+
+$$\hat{p}_h = \frac{|\{i : R_{i,h} > 0\}|}{n_h}$$
+
+En lugar del intervalo de Wald (que falla con muestras chicas), se usa el **intervalo de Wilson**. Dado $k$ éxitos en $n$ intentos y $z = 1.96$ (cuantil 97.5% de la normal estándar):
+
+$$\tilde{p} = \frac{\hat{p} + \dfrac{z^2}{2n}}{1 + \dfrac{z^2}{n}}, \qquad m = \frac{z}{1 + z^2/n} \sqrt{\frac{\hat{p}(1-\hat{p})}{n} + \frac{z^2}{4n^2}}$$
+
+$$\text{IC}_{95\%} = \left[\max(0,\, \tilde{p} - m),\; \min(1,\, \tilde{p} + m)\right]$$
+
+El intervalo de Wilson es invariante a la transformación de éxito/fracaso y cubre la proporción real con probabilidad nominal incluso para $n < 30$.
+
+### 5. CVaR (Expected Shortfall)
+
+El **Valor en Riesgo Condicional** al nivel $\alpha$ mide la pérdida esperada en el peor $(1-\alpha)$ de los casos:
+
+$$\text{CVaR}_\alpha = \mathbb{E}\!\left[R \;\middle|\; R \leq \text{VaR}_{1-\alpha}\right]$$
+
+donde $\text{VaR}_{1-\alpha} = P_{1-\alpha}$ es el percentil $(1-\alpha)$ de la distribución empírica. Con $\alpha = 0.95$:
+
+$$\text{CVaR}_{95\%} = \frac{1}{|\mathcal{T}|} \sum_{i \in \mathcal{T}} R_{i,h}, \qquad \mathcal{T} = \{i : R_{i,h} \leq P_5\}$$
+
+A diferencia del VaR (un cuantil), el CVaR es coherente: es convexo y monótono en el sentido de dominancia estocástica.
+
+### 6. Estadísticas descriptivas
+
+**Desvío estándar muestral** (corrección de Bessel para estimación insesgada de la varianza):
+
+$$s = \sqrt{\frac{1}{n-1} \sum_{i=1}^{n} (R_i - \bar{R})^2}$$
+
+**Percentil con interpolación lineal**: para el cuantil $q$ sobre $n$ observaciones ordenadas $x_{(1)} \leq \ldots \leq x_{(n)}$:
+
+$$\text{pos} = (n-1) \cdot q, \qquad P_q = (1-w)\, x_{(\lfloor\text{pos}\rfloor + 1)} + w\, x_{(\lceil\text{pos}\rceil + 1)}, \quad w = \text{pos} - \lfloor\text{pos}\rfloor$$
+
+---
+
+## Clasificación de regímenes
+
+Cada evento es etiquetado por las condiciones de mercado en el momento en que ocurre.
+
+### Tendencia (MA slope)
+
+$$\text{MA}_t^{(k)} = \frac{1}{k} \sum_{j=t-k+1}^{t} c_j, \qquad \text{slope}_t = \text{MA}_t^{(k)} - \text{MA}_{t-20}^{(k)}$$
+
+- **Uptrend**: $\text{slope}_t > 0$
+- **Downtrend**: $\text{slope}_t \leq 0$
+
+### Volatilidad realizada (ventana móvil, anualizada)
+
+$$\sigma_t^{\text{rv}} = \hat{s}(r_{t-w+1}, \ldots, r_t) \cdot \sqrt{252}$$
+
+donde $\hat{s}$ es el desvío estándar muestral y $w$ es la ventana en días. Los percentiles $P_{20}$ y $P_{80}$ de $\sigma^{\text{rv}}$ sobre toda la muestra dividen el régimen en tres:
+
+$$\text{vol regime}_t = \begin{cases} \text{high} & \text{si } \sigma_t^{\text{rv}} > P_{80} \\ \text{low} & \text{si } \sigma_t^{\text{rv}} < P_{20} \\ \text{mid} & \text{si no} \end{cases}$$
+
+### Shock de volumen
+
+$$z_t^V = \frac{V_t - \bar{V}_t}{\hat{s}_V(t)}, \quad \text{shock si } z_t^V > 2$$
+
+donde $\bar{V}_t$ y $\hat{s}_V(t)$ son la media y el desvío de volumen en ventana móvil.
+
+---
+
+## Heatmap de sensibilidad
+
+Para estudiar la robustez de los resultados ante cambios en el umbral, se evalúa la función $(\theta, h) \mapsto (\hat{p}_h, \mathbb{E}[R_{i,h}])$ en una grilla:
+
+$$\theta \in \{0.5\bar{\theta},\; 0.75\bar{\theta},\; \bar{\theta},\; 1.25\bar{\theta},\; 1.5\bar{\theta}\}, \qquad h \in \{1, 2, 3, 5, 10\}$$
+
+donde $\bar{\theta}$ es el umbral base. Si $\hat{p}_h$ es estable al variar $\theta$, el hallazgo es robusto; si colapsa, es artefacto del umbral elegido.
+
+---
+
+## Estructura del cálculo
+
+```
+serie OHLCV (Yahoo Finance)
+        │
+        ├─ computeCloseToCloseReturns()     r_t = c_t/c_{t-1} - 1
+        ├─ buildRegimeFeatures()            MA, slope, σ^rv, z^V
+        │
+        ├─ selectEventIndices()             shocks + cooldown
+        │
+        ├─ buildForwardReturns()            R_{i,h} = c_{t+h}/c_t - 1
+        │
+        └─ summarizeHorizon()  por cada h:
+              ├── pUp, wilsonInterval()     P(subida) + IC 95%
+              ├── mean, median, p10, p90
+              └── cvar(α=0.95)             E[R | R ≤ P_5]
+```
+
+---
 
 ## Stack
 
-- Next.js (App Router), React, TypeScript
-- TailwindCSS + shadcn/ui style components
-- Recharts
-- TanStack Table
-- zod
-- yahoo-finance2
-- html-to-image
+Next.js 14 (App Router) · TypeScript · Tailwind CSS · Recharts · TanStack Table · yahoo-finance2 · Zod
 
-## Arquitectura
+---
 
-### Data Layer
-
-- `app/api/prices/route.ts`
-  - Valida input con zod.
-  - Consulta Yahoo Finance (wrapper `lib/yahoo.ts`).
-  - Retorna serie daily normalizada.
-- `app/api/screener/route.ts`
-  - Corre watchlist default.
-  - Detecta evento en último día.
-  - Rankea por `ev3d` o `pUp1d`.
-
-### Event Engine
-
-- `lib/eventEngine.ts`
-  - Detección de eventos + cooldown.
-  - Cálculo de retornos forward por horizonte.
-  - KPI summary, tabla de horizontes, heatmap, breakdown por régimen.
-  - Cache TTL in-memory para resultados computados.
-- `lib/regimes.ts`
-  - RV, MA slope, volume z-score y clasificación de regímenes.
-- `lib/stats.ts`
-  - Percentiles, Wilson CI, CVaR, media/mediana/std.
-
-### UI Layer
-
-- `app/page.tsx`
-  - Layout 12 columnas (sidebar inputs + main analytics).
-  - Estado sincronizado con query params para links compartibles.
-  - Header sticky con timestamp actualizado.
-- `components/*`
-  - KPIs, panel de inputs, tabla de horizontes, charts, breakdown, skeletons, export snapshot.
-
-## Estructura principal
-
-```txt
-app/
-  page.tsx
-  api/
-    prices/route.ts
-    screener/route.ts
-lib/
-  yahoo.ts
-  eventEngine.ts
-  stats.ts
-  regimes.ts
-  types.ts
-components/
-  KpiCard.tsx
-  InputsPanel.tsx
-  HorizonTable.tsx
-  ReturnHistogram.tsx
-  ForwardCurveChart.tsx
-  RegimeTable.tsx
-  SnapshotExport.tsx
-  LoadingSkeletons.tsx
-  ui/*
-```
-
-## Cómo correr local
-
-1. Instalar dependencias:
+## Correr local
 
 ```bash
 npm install
-```
-
-2. Levantar desarrollo:
-
-```bash
-npm run dev
-```
-
-3. Abrir:
-
-```txt
-http://localhost:3000
+npm run dev    # http://localhost:3000
 ```
 
 ## Endpoints
 
-- `GET /api/prices?ticker=SPY&range=5y`
-- `GET /api/screener?threshold=10&direction=down`
+| Endpoint | Parámetros principales |
+|---|---|
+| `GET /api/prices` | `ticker`, `range` (1y/2y/5y/10y/max) |
+| `GET /api/screener` | `threshold`, `direction` (down/up), `cooldown`, `rankBy` |
 
-Parámetros relevantes:
+---
 
-- `ticker`: string (ej. `SPY`, `BTC-USD`)
-- `range`: `1y | 2y | 5y | 10y | max`
-- `threshold`: porcentaje absoluto del shock
-- `direction`: `down | up`
-- `cooldown`: días a ignorar tras evento
-- `rankBy`: `ev3d | pUp1d`
-
-## Limitaciones Yahoo Finance
-
-- Fuente gratuita no oficial para producción crítica.
-- Puede tener retrasos, gaps o ajustes corporativos inconsistentes según activo.
-- Cobertura y calidad de volumen/adj close varía por ticker.
-- En mercados cerrados (finde/feriados), “today event” se basa en el **último día disponible**.
-
-## Roadmap
-
-1. Bootstrap / block-bootstrap para intervalos en retornos esperados.
-2. Regímenes adicionales (gap day, ATR shock, breadth proxy).
-3. Persistencia de snapshots/estudios (DB + sharable IDs).
-4. Backtest portfolio-level y señales combinadas multi-factor.
-5. Modo multi-ticker batch en UI (comparativo lado a lado).
+> **Nota**: Yahoo Finance es una fuente no oficial. Los datos pueden tener retrasos, gaps o ajustes corporativos inconsistentes. No usar en producción crítica.
