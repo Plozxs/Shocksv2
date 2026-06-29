@@ -40,9 +40,9 @@ $$\hat{p}_h = \frac{|\{i : R_{i,h} > 0\}|}{n_h}$$
 
 En lugar del intervalo de Wald (que falla con muestras chicas), se usa el **intervalo de Wilson**. Dado $k$ éxitos en $n$ intentos y $z = 1.96$ (cuantil 97.5% de la normal estándar):
 
-$$\tilde{p} = \frac{\hat{p} + \dfrac{z^2}{2n}}{1 + \dfrac{z^2}{n}}, \qquad m = \frac{z}{1 + z^2/n} \sqrt{\frac{\hat{p}(1-\hat{p})}{n} + \frac{z^2}{4n^2}}$$
+$$\tilde{p} = \frac{n\hat{p} + z^2/2}{n + z^2}, \qquad m = \frac{z}{n + z^2}\sqrt{n\,\hat{p}(1-\hat{p}) + \frac{z^2}{4}}$$
 
-$$\text{IC}_{95\%} = \left[\max(0,\, \tilde{p} - m),\; \min(1,\, \tilde{p} + m)\right]$$
+$$\text{IC}_{95} = \left[\max\!\left(0,\; \tilde{p} - m\right),\quad \min\!\left(1,\; \tilde{p} + m\right)\right]$$
 
 El intervalo de Wilson es invariante a la transformación de éxito/fracaso y cubre la proporción real con probabilidad nominal incluso para $n < 30$.
 
@@ -50,11 +50,11 @@ El intervalo de Wilson es invariante a la transformación de éxito/fracaso y cu
 
 El **Valor en Riesgo Condicional** al nivel $\alpha$ mide la pérdida esperada en el peor $(1-\alpha)$ de los casos:
 
-$$\text{CVaR}_\alpha = \mathbb{E}\!\left[R \;\middle|\; R \leq \text{VaR}_{1-\alpha}\right]$$
+$$\text{CVaR}_\alpha = \mathbb{E}\left[R \mid R \leq \text{VaR}_{1-\alpha}\right]$$
 
 donde $\text{VaR}_{1-\alpha} = P_{1-\alpha}$ es el percentil $(1-\alpha)$ de la distribución empírica. Con $\alpha = 0.95$:
 
-$$\text{CVaR}_{95\%} = \frac{1}{|\mathcal{T}|} \sum_{i \in \mathcal{T}} R_{i,h}, \qquad \mathcal{T} = \{i : R_{i,h} \leq P_5\}$$
+$$\text{CVaR}_{0.95} = \frac{1}{|\mathcal{T}|} \sum_{i \in \mathcal{T}} R_{i,h}, \qquad \mathcal{T} = \{i : R_{i,h} \leq P_{0.05}\}$$
 
 A diferencia del VaR (un cuantil), el CVaR es coherente: es convexo y monótono en el sentido de dominancia estocástica.
 
@@ -122,7 +122,7 @@ serie OHLCV (Yahoo Finance)
         └─ summarizeHorizon()  por cada h:
               ├── pUp, wilsonInterval()     P(subida) + IC 95%
               ├── mean, median, p10, p90
-              └── cvar(α=0.95)             E[R | R ≤ P_5]
+              └── cvar(α=0.95)             E[R | R ≤ P_0.05]
 ```
 
 ---
