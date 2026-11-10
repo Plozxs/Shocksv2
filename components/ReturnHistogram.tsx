@@ -58,24 +58,26 @@ export function ReturnHistogram({ values, horizon }: ReturnHistogramProps) {
   return (
     <Card className="h-full">
       <CardHeader>
-        <CardTitle className="text-sm">Histograma Post Evento ({horizon}D)</CardTitle>
+        <CardTitle>Histograma Post Evento ({horizon}D)</CardTitle>
       </CardHeader>
       <CardContent className="h-72">
         {bins.length ? (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={bins} margin={{ left: 0, right: 8, top: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.18)" />
-              <XAxis dataKey="bucket" tick={{ fill: "#94a3b8", fontSize: 10 }} interval={2} />
-              <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+              <CartesianGrid stroke="#EFEDE8" vertical={false} />
+              <XAxis dataKey="bucket" tick={{ fill: "#6B7276", fontSize: 10, fontFamily: "var(--font-ibm-mono)" }} axisLine={{ stroke: "#C9C6BE" }} tickLine={false} interval={2} />
+              <YAxis tick={{ fill: "#6B7276", fontSize: 11, fontFamily: "var(--font-ibm-mono)" }} axisLine={{ stroke: "#C9C6BE" }} tickLine={false} />
               <Tooltip
+                cursor={{ fill: "#E3F1F4" }}
                 contentStyle={{
-                  backgroundColor: "#0f172a",
-                  border: "1px solid #1f2937",
-                  borderRadius: "8px",
-                  color: "#e5e7eb",
+                  backgroundColor: "#FFFFFF",
+                  border: "1px solid #E6E4DE",
+                  borderRadius: "4px",
+                  color: "#1E2326",
+                  fontSize: "12px",
                 }}
               />
-              <Bar dataKey="count" fill="#22d3ee" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="count" fill="#3E9DB0" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         ) : (

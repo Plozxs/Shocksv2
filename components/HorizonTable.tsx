@@ -90,7 +90,7 @@ export function HorizonTable({ data }: HorizonTableProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">Forward Metrics by Horizon</CardTitle>
+        <CardTitle>Forward Metrics by Horizon</CardTitle>
       </CardHeader>
       <CardContent>
         <Table>

@@ -25,6 +25,7 @@ export function SnapshotExport({ targetRef, fileName = "shock-lab-snapshot" }: S
     try {
       const dataUrl = await toPng(targetRef.current, {
         cacheBust: true,
+        backgroundColor: "#FAFAF7",
         pixelRatio: 2,
         width: 1600,
         height: 900,

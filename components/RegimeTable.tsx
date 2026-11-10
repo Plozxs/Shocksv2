@@ -24,7 +24,7 @@ export function RegimeTable({ rows }: RegimeTableProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">Regime Breakdown</CardTitle>
+        <CardTitle>Regime Breakdown</CardTitle>
       </CardHeader>
       <CardContent>
         <Table>

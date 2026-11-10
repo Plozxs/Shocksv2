@@ -98,7 +98,7 @@ export function InputsPanel({ value, onChange, onRefresh, loading = false }: Inp
     <Card className="sticky top-16">
       <CardHeader className="space-y-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">Shock Setup</CardTitle>
+          <CardTitle>Shock Setup</CardTitle>
           <Badge variant="secondary">{value.direction === "down" ? "Mean Reversion" : "Momentum"}</Badge>
         </div>
         <Button

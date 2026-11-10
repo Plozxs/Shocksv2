@@ -118,15 +118,15 @@ function formatPercent(value: number | null, digits = 2): string {
 
 function heatColor(probability: number | null): string {
   if (probability === null) {
-    return "bg-panel-900";
+    return "bg-panel-900 text-tenue";
   }
   if (probability >= 0.6) {
-    return "bg-success/30";
+    return "bg-success/20 text-success";
   }
   if (probability <= 0.4) {
-    return "bg-danger/25";
+    return "bg-danger/15 text-danger";
   }
-  return "bg-accent/20";
+  return "bg-accent-soft text-accent";
 }
 
 export default function ShockLabDashboard() {
@@ -380,16 +380,20 @@ export default function ShockLabDashboard() {
   const histogramValues = analysis?.histogramByHorizon[String(histogramHorizon)] ?? [];
 
   return (
-    <div className="min-h-screen bg-terminal-grid">
-      <header className="sticky top-0 z-40 border-b border-border/70 bg-background/90 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 py-3">
+    <div className="min-h-screen">
+      <header className="border-b border-border bg-background">
+        <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-end justify-between gap-3 px-4 pb-4 pt-6">
           <div>
-            <p className="font-mono text-xl font-semibold uppercase tracking-[0.22em] text-accent">
-              Shock Lab
-            </p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-accent">JRM · Mesa</p>
+            <h1 className="mt-1 font-serif text-3xl font-normal text-foreground sm:text-4xl">
+              Shock Lab <span className="text-muted">· Event studies</span>
+            </h1>
           </div>
           <div className="flex items-center gap-3">
-            <p className="text-xs text-muted">Updated {updatedLabel}</p>
+            <p className="flex items-center gap-2 text-xs text-muted">
+              <span aria-hidden className="h-2 w-2 rounded-full bg-success" />
+              Updated {updatedLabel}
+            </p>
             <SnapshotExport targetRef={snapshotRef} />
           </div>
         </div>
@@ -435,10 +439,10 @@ export default function ShockLabDashboard() {
           ) : null}
 
           {analysis ? (
-            <div ref={snapshotRef} className="space-y-4 rounded-xl border border-border/70 bg-panel-900/50 p-4">
+            <div ref={snapshotRef} className="space-y-4 bg-background p-1">
               {analysis.warnings.length ? (
-                <Card className="border-amber-500/40 bg-amber-500/5">
-                  <CardContent className="space-y-1 py-3 text-xs text-amber-200">
+                <Card className="border-signal/40 bg-signal/5">
+                  <CardContent className="space-y-1 py-3 text-xs text-signal">
                     {analysis.warnings.map((warning) => (
                       <div key={warning} className="flex items-start gap-2">
                         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -534,9 +538,9 @@ export default function ShockLabDashboard() {
               <HorizonTable data={analysis.horizonMetrics} />
 
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between rounded-md border border-border/70 bg-panel px-3 py-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between rounded-md border border-border bg-panel px-3 py-2">
+                    <p className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted">
                       Histograma por horizonte
                     </p>
                     <Tabs value={String(histogramHorizon)} onValueChange={(value) => setHistogramHorizon(Number(value))}>
@@ -549,7 +553,9 @@ export default function ShockLabDashboard() {
                       </TabsList>
                     </Tabs>
                   </div>
-                  <ReturnHistogram values={histogramValues} horizon={histogramHorizon} />
+                  <div className="flex-1">
+                    <ReturnHistogram values={histogramValues} horizon={histogramHorizon} />
+                  </div>
                 </div>
 
                 <ForwardCurveChart data={analysis.forwardCurve} />
@@ -557,7 +563,7 @@ export default function ShockLabDashboard() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-sm">Heatmap Umbral vs Horizonte</CardTitle>
+                  <CardTitle>Heatmap Umbral vs Horizonte</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-auto">
@@ -608,7 +614,7 @@ export default function ShockLabDashboard() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
-                <CardTitle className="text-sm">Today Screener</CardTitle>
+                <CardTitle>Today Screener</CardTitle>
                 <p className="mt-1 text-xs text-muted">
                   Watchlist fija; detecta evento en el último día y rankea por {inputs.screenerRankBy}.
                 </p>
@@ -664,7 +670,7 @@ export default function ShockLabDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="border-border/60 bg-panel/40">
+          <Card className="border-border bg-transparent">
             <CardContent className="flex items-center gap-2 py-3 text-xs text-muted">
               <Database className="h-3.5 w-3.5" />
               Fuente exclusiva: Yahoo Finance (daily OHLCV).

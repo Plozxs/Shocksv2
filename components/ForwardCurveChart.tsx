@@ -29,16 +29,16 @@ export function ForwardCurveChart({ data }: ForwardCurveChartProps) {
   return (
     <Card className="h-full">
       <CardHeader>
-        <CardTitle className="text-sm">Curva Forward: Media vs Mediana</CardTitle>
+        <CardTitle>Curva Forward: Media vs Mediana</CardTitle>
       </CardHeader>
       <CardContent className="h-72">
         {hasData ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ left: 0, right: 8, top: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.18)" />
-              <XAxis dataKey="horizon" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+              <CartesianGrid stroke="#EFEDE8" vertical={false} />
+              <XAxis dataKey="horizon" tick={{ fill: "#6B7276", fontSize: 11, fontFamily: "var(--font-ibm-mono)" }} axisLine={{ stroke: "#C9C6BE" }} tickLine={false} />
               <YAxis
-                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                tick={{ fill: "#6B7276", fontSize: 11, fontFamily: "var(--font-ibm-mono)" }} axisLine={{ stroke: "#C9C6BE" }} tickLine={false}
                 tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
               />
               <Tooltip
@@ -46,28 +46,30 @@ export function ForwardCurveChart({ data }: ForwardCurveChartProps) {
                   typeof value === "number" ? `${value.toFixed(2)}%` : String(value ?? "—")
                 }
                 contentStyle={{
-                  backgroundColor: "#0f172a",
-                  border: "1px solid #1f2937",
-                  borderRadius: "8px",
-                  color: "#e5e7eb",
+                  backgroundColor: "#FFFFFF",
+                  border: "1px solid #E6E4DE",
+                  borderRadius: "4px",
+                  color: "#1E2326",
+                  fontSize: "12px",
                 }}
               />
-              <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
+              <Legend iconType="plainline" wrapperStyle={{ color: "#6B7276", fontSize: "12px" }} />
               <Line
                 type="monotone"
                 dataKey="mean"
-                stroke="#22d3ee"
+                stroke="#3E9DB0"
                 strokeWidth={2}
-                dot={{ r: 3 }}
+                dot={{ r: 3, fill: "#3E9DB0", stroke: "#3E9DB0" }}
                 connectNulls
                 name="Media"
               />
               <Line
                 type="monotone"
                 dataKey="median"
-                stroke="#34d399"
-                strokeWidth={2}
-                dot={{ r: 3 }}
+                stroke="#8A9296"
+                strokeWidth={1.5}
+                strokeDasharray="5 4"
+                dot={{ r: 3, fill: "#FFFFFF", stroke: "#8A9296" }}
                 connectNulls
                 name="Mediana"
               />

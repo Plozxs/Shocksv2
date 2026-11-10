@@ -32,7 +32,7 @@ export function KpiCard({
   return (
     <Card className="h-full">
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-xs text-muted">
+        <CardTitle className="flex items-center gap-1.5 font-sans text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted">
           <span>{title}</span>
           {tooltip ? (
             <TooltipProvider>
