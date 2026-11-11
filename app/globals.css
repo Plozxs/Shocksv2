@@ -27,3 +27,20 @@ body {
 .font-mono {
   font-variant-numeric: tabular-nums;
 }
+
+.eje3d {
+  font-family: var(--font-ibm-mono), ui-monospace, monospace;
+  font-size: 11px;
+  color: #6b7276;
+  white-space: nowrap;
+}
+.eje3d.titulo {
+  font-family: var(--font-ibm-sans), ui-sans-serif, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #9aa0a3;
+}
+.eje3d.hoy {
+  color: #b07a2a;
+  font-weight: 600;
+}

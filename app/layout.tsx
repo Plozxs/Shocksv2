@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
+import { Navegacion } from "@/components/Navegacion";
 
 const ibmSans = IBM_Plex_Sans({
   weight: ["400", "500", "600", "700"],
@@ -22,7 +23,7 @@ const serif = Source_Serif_4({
 
 export const metadata: Metadata = {
   title: "Shock Lab",
-  description: "Quant terminal dashboard for post-shock event studies using Yahoo Finance data.",
+  description: "Rachas, shocks y qué pasó después: estadística para operar en el día a día.",
 };
 
 export default function RootLayout({
@@ -33,6 +34,7 @@ export default function RootLayout({
   return (
     <html lang="es">
       <body className={`${ibmSans.variable} ${ibmMono.variable} ${serif.variable} min-h-screen antialiased`}>
+        <Navegacion />
         {children}
       </body>
     </html>

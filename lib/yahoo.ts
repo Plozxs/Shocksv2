@@ -199,9 +199,12 @@ function looksLikeInvalidTicker(message: string): boolean {
 }
 
 async function fetchChartFallback(ticker: string, range: RangeOption): Promise<PriceBar[]> {
+  // Con range=max Yahoo baja la granularidad a mensual: se piden fechas explícitas para tener siempre barras diarias.
+  const period1 = Math.floor(resolvePeriodStart(range).getTime() / 1000);
+  const period2 = Math.floor(Date.now() / 1000) + 86400;
   const url = `${YAHOO_CHART_BASE}/${encodeURIComponent(
     ticker,
-  )}?range=${range}&interval=1d&events=div,split&includePrePost=false`;
+  )}?period1=${period1}&period2=${period2}&interval=1d&events=div,split&includePrePost=false`;
 
   const response = await fetch(url, {
     headers: {

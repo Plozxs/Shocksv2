@@ -384,7 +384,6 @@ export default function ShockLabDashboard() {
       <header className="border-b border-border bg-background">
         <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-end justify-between gap-3 px-4 pb-4 pt-6">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-accent">JRM · Mesa</p>
             <h1 className="mt-1 font-serif text-3xl font-normal text-foreground sm:text-4xl">
               Shock Lab <span className="text-muted">· Event studies</span>
             </h1>

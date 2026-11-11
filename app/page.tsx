@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import ShockLabDashboard from "@/components/ShockLabDashboard";
+import RachasDashboard from "@/components/rachas/RachasDashboard";
 
 export default function Page() {
   return (
     <Suspense fallback={null}>
-      <ShockLabDashboard />
+      <RachasDashboard />
     </Suspense>
   );
 }
