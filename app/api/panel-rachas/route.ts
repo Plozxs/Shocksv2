@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { filaPanel, FilaPanel, Frecuencia } from "@/lib/streaks";
+import { filaPanel, FilaPanel } from "@/lib/quant";
+import { Frecuencia } from "@/lib/streaks";
 import { getHistoricalPrices, tickerSchema } from "@/lib/yahoo";
 
 export const runtime = "nodejs";

@@ -29,6 +29,39 @@ export const HORIZONTES: Record<Frecuencia, number[]> = {
 /** Ventana para MAE/MFE: peor caída y mejor suba dentro de las próximas N barras. */
 export const VENTANA_EXCURSION: Record<Frecuencia, number> = { D: 10, W: 8, M: 6 };
 
+/** Ventana de volatilidad para medir las rachas en desvíos. */
+export const VENTANA_VOL: Record<Frecuencia, number> = { D: 20, W: 13, M: 12 };
+
+/** Desvío de los retornos logarítmicos de las `w` barras que terminan en t (null si no alcanza). */
+export function sigmas(barras: Barra[], w: number): Array<number | null> {
+  const r = barras.map((b, i) => (i === 0 ? 0 : Math.log(b.close / barras[i - 1].close)));
+  const out: Array<number | null> = new Array(barras.length).fill(null);
+  let s = 0;
+  let s2 = 0;
+  for (let i = 1; i < barras.length; i += 1) {
+    s += r[i];
+    s2 += r[i] * r[i];
+    if (i > w) {
+      s -= r[i - w];
+      s2 -= r[i - w] * r[i - w];
+    }
+    if (i >= w) {
+      const m = s / w;
+      const v = (s2 - w * m * m) / (w - 1);
+      out[i] = v > 0 ? Math.sqrt(v) : null;
+    }
+  }
+  return out;
+}
+
+/** Variación de la racha entre `inicio` e `i` en desvíos: ln(c_i/c_inicio) / (σ·√largo), con σ medido antes de que empiece. */
+export function zRacha(barras: Barra[], sig: Array<number | null>, inicio: number, i: number): number | null {
+  const s = sig[inicio];
+  const k = i - inicio;
+  if (!s || k <= 0) return null;
+  return Math.log(barras[i].close / barras[inicio].close) / (s * Math.sqrt(k));
+}
+
 // ---------------------------------------------------------------------------
 // Re-muestreo
 
@@ -38,6 +71,27 @@ function claveSemana(fecha: string): string {
   const dia = (d.getUTCDay() + 6) % 7;
   d.setUTCDate(d.getUTCDate() - dia);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Yahoo trae aperturas y extremos falsos en historia vieja de papeles locales (p. ej. mínimos de 3,75
+ * repetidos en 2002 con cierres de 4,60). Un extremo que se aleja más de 15% del cierre del día y del
+ * anterior a la vez se descarta; la apertura, igual. Así no se disparan stops que nunca existieron.
+ */
+function limpiarOHLC(barras: Barra[]): void {
+  const TOPE = 0.15;
+  for (let i = 0; i < barras.length; i += 1) {
+    const b = barras[i];
+    const prev = i > 0 ? barras[i - 1].close : b.close;
+    const lejos = (x: number) => Math.abs(x / b.close - 1) > TOPE && Math.abs(x / prev - 1) > TOPE;
+    if (lejos(b.open)) b.open = prev;
+    const piso = Math.min(b.close, prev, b.open);
+    const techo = Math.max(b.close, prev, b.open);
+    if (b.low < piso * (1 - TOPE)) b.low = Math.min(b.close, b.open);
+    if (b.high > techo * (1 + TOPE)) b.high = Math.max(b.close, b.open);
+    b.low = Math.min(b.low, b.open, b.close);
+    b.high = Math.max(b.high, b.open, b.close);
+  }
 }
 
 export function remuestrear(bars: PriceBar[], frecuencia: Frecuencia): Barra[] {
@@ -55,6 +109,7 @@ export function remuestrear(bars: PriceBar[], frecuencia: Frecuencia): Barra[] {
         close: b.adjClose,
       };
     });
+  limpiarOHLC(ajustadas);
   if (frecuencia === "D") return ajustadas;
 
   const clave = frecuencia === "W" ? claveSemana : (fecha: string) => fecha.slice(0, 7);
@@ -183,6 +238,7 @@ export interface Ocurrencia {
   mae: number | null;
   mfe: number | null;
   barraQueCorta: number | null; // variación de la barra que cortó la racha
+  zK: number | null; // intensidad de la racha al llegar a k, en desvíos
   parecida: boolean;
 }
 
@@ -202,7 +258,11 @@ export interface EstudioRacha {
   sentido: Sentido | null;
   k: number;
   variacionActual: number | null;
+  zActual: number | null;
+  percentilZ: number | null; // % de las ocurrencias con una racha menos intensa que la de hoy
   horizontes: number[];
+  barrasR: Barra[];
+  baseFwd: Record<number, number[]>;
   ocurrencias: Ocurrencia[];
   todas: Record<number, Metricas>;
   parecidas: Record<number, Metricas>;
@@ -222,12 +282,12 @@ export interface OpcionesEstudio {
   frecuencia: Frecuencia;
   /** Si se pasa, estudia esta racha en vez de la actual. Signo: negativo = baja. */
   kForzado?: number;
-  /** Rango para "caída parecida": variación de la ocurrencia entre [1-t, 1+t] veces la actual. */
-  tolerancia?: number;
+  /** Intensidad parecida: |z de la ocurrencia − z de hoy| ≤ toleranciaZ. */
+  toleranciaZ?: number;
 }
 
 export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): EstudioRacha | null {
-  const { frecuencia, kForzado, tolerancia = 0.5 } = opciones;
+  const { frecuencia, kForzado, toleranciaZ = 0.75 } = opciones;
   const barras = remuestrear(bars, frecuencia);
   if (barras.length < 30) return null;
   const L = largos(barras);
@@ -238,7 +298,9 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
   const ventana = VENTANA_EXCURSION[frecuencia];
   const lista = rachas(barras, L);
 
+  const sig = sigmas(barras, VENTANA_VOL[frecuencia]);
   const base: Record<number, Metricas> = {};
+  const baseFwd: Record<number, number[]> = {};
   for (const h of horizontes) {
     const v: number[] = [];
     for (let i = 1; i < ultimo; i += 1) {
@@ -246,6 +308,7 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
       if (x !== null) v.push(x);
     }
     base[h] = metricas(v);
+    baseFwd[h] = v;
   }
   const maesBase: number[] = [];
   for (let i = 1; i + ventana <= ultimo; i += 1) {
@@ -262,7 +325,11 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
     sentido: signo > 0 ? "suba" : signo < 0 ? "baja" : null,
     k,
     variacionActual: null,
+    zActual: null,
+    percentilZ: null,
     horizontes,
+    barrasR: barras,
+    baseFwd,
     ocurrencias: [],
     todas: {},
     parecidas: {},
@@ -282,6 +349,7 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
   const sentido: Sentido = signo > 0 ? "suba" : "baja";
   const variacionActual =
     kForzado === undefined && ultimo - k >= 0 ? barras[ultimo].close / barras[ultimo - k].close - 1 : null;
+  const zActual = kForzado === undefined && ultimo - k >= 0 ? zRacha(barras, sig, ultimo - k, ultimo) : null;
 
   const mismoSentido = lista.filter((r) => r.sentido === sentido);
   // La racha actual todavía no terminó: no cuenta como ocurrencia ni para la supervivencia.
@@ -296,10 +364,8 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
       for (const h of horizontes) fwd[h] = adelante(barras, i, h);
       const ex = excursion(barras, i, ventana);
       const corta = r.fin + 1 <= ultimo ? barras[r.fin + 1].close / barras[r.fin].close - 1 : null;
-      const parecida =
-        variacionActual !== null && variacionActual !== 0
-          ? variacionK / variacionActual >= 1 - tolerancia && variacionK / variacionActual <= 1 + tolerancia
-          : true;
+      const zK = zRacha(barras, sig, r.inicio, i);
+      const parecida = zActual !== null ? zK !== null && Math.abs(zK - zActual) <= toleranciaZ : true;
       return {
         i,
         fechaInicio: barras[r.inicio + 1].start,
@@ -311,6 +377,7 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
         mae: ex.mae,
         mfe: ex.mfe,
         barraQueCorta: corta,
+        zK,
         parecida,
       };
     })
@@ -341,6 +408,11 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
     ...vacio,
     sentido,
     variacionActual,
+    zActual,
+    percentilZ:
+      zActual !== null && ocurrencias.length
+        ? ocurrencias.filter((o) => o.zK !== null && Math.abs(o.zK) < Math.abs(zActual)).length / ocurrencias.length
+        : null,
     ocurrencias,
     todas,
     parecidas,
@@ -352,94 +424,5 @@ export function estudiarRacha(bars: PriceBar[], opciones: OpcionesEstudio): Estu
     maxHistorico: max ? { largo: max.largo, fecha: barras[max.fin].date, variacion: max.variacion } : null,
     rachasMismoSentido: cerradas.length,
     corteMedia: mean(ocurrencias.map((o) => o.barraQueCorta).filter(isFiniteNumber)),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Superficie para el 3D: retorno medio por largo de racha (con signo) y horizonte
-
-export interface CeldaSuperficie {
-  k: number; // negativo = racha de baja
-  h: number;
-  n: number;
-  media: number | null;
-  exceso: number | null; // media - media base del mismo horizonte
-  pSuba: number | null;
-}
-
-export function superficie(bars: PriceBar[], frecuencia: Frecuencia, kMax = 8, nMin = 5): CeldaSuperficie[] {
-  const barras = remuestrear(bars, frecuencia);
-  if (barras.length < 30) return [];
-  const L = largos(barras);
-  const ultimo = barras.length - 1;
-  const horizontes = HORIZONTES[frecuencia];
-  const base: Record<number, number | null> = {};
-  for (const h of horizontes) {
-    const v: number[] = [];
-    for (let i = 1; i < ultimo; i += 1) {
-      const x = adelante(barras, i, h);
-      if (x !== null) v.push(x);
-    }
-    base[h] = mean(v);
-  }
-  const celdas: CeldaSuperficie[] = [];
-  for (let k = -kMax; k <= kMax; k += 1) {
-    if (k === 0) continue;
-    for (const h of horizontes) {
-      const v: number[] = [];
-      for (let i = 1; i < ultimo; i += 1) {
-        // Evento: la barra en la que la racha llega exactamente a |k| (una por racha).
-        if (L[i] !== k) continue;
-        const x = adelante(barras, i, h);
-        if (x !== null) v.push(x);
-      }
-      const m = v.length >= nMin ? mean(v) : null;
-      celdas.push({
-        k,
-        h,
-        n: v.length,
-        media: m,
-        exceso: m !== null && base[h] !== null ? m - (base[h] as number) : null,
-        pSuba: v.length >= nMin ? v.filter((x) => x > 0).length / v.length : null,
-      });
-    }
-  }
-  return celdas;
-}
-
-// ---------------------------------------------------------------------------
-// Racha actual en una lista de papeles (para el panel de la mañana)
-
-export interface FilaPanel {
-  ticker: string;
-  fecha: string;
-  cierre: number;
-  k: number; // con signo
-  variacion: number | null;
-  percentilLargo: number | null;
-  n: number;
-  pSuba1: number | null;
-  media1: number | null;
-  mediaH: number | null; // horizonte medio (5 ruedas / 4 semanas / 3 meses)
-  base1: number | null;
-}
-
-export function filaPanel(ticker: string, bars: PriceBar[], frecuencia: Frecuencia): FilaPanel | null {
-  const e = estudiarRacha(bars, { frecuencia });
-  if (!e) return null;
-  const hMedio = HORIZONTES[frecuencia][frecuencia === "D" ? 3 : 2];
-  const h1 = HORIZONTES[frecuencia][0];
-  return {
-    ticker,
-    fecha: e.hasta,
-    cierre: e.ultimoCierre,
-    k: e.sentido === "baja" ? -e.k : e.k,
-    variacion: e.variacionActual,
-    percentilLargo: e.percentilLargo,
-    n: e.ocurrencias.length,
-    pSuba1: e.todas[h1]?.pSuba ?? null,
-    media1: e.todas[h1]?.media ?? null,
-    mediaH: e.todas[hMedio]?.media ?? null,
-    base1: e.base[h1]?.media ?? null,
   };
 }

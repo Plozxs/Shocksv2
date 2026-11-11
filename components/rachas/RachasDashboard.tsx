@@ -4,37 +4,27 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import { EstudioRacha, estudiarRacha, Frecuencia, HORIZONTES, metricas, Metricas, UNIDAD, VENTANA_EXCURSION } from "@/lib/streaks";
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  LabelList,
-  Line,
-  LineChart,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import {
-  EstudioRacha,
-  estudiarRacha,
+  buscarAnalogos,
+  CeldaBarrera,
+  costoPorDefecto,
   FilaPanel,
-  Frecuencia,
-  HORIZONTES,
-  Metricas,
-  superficie,
-  UNIDAD,
-  VENTANA_EXCURSION,
-} from "@/lib/streaks";
+  Lado,
+  RASGOS,
+  ResultadoAnalogos,
+  superficieBarreras,
+  TestVentaja,
+  testHorizontes,
+} from "@/lib/quant";
+import { isFiniteNumber } from "@/lib/stats";
 import { colorSigno, fecha, num, pct, plural, prob } from "@/lib/formato";
 import { PriceBar } from "@/lib/types";
-import type { MetricaSuperficie } from "@/components/three/Superficie3D";
+import { Caja, celdaProb, CurvaAdelante, Fichas, Recorrido, Segmentado, Supervivencia } from "@/components/rachas/piezas";
+import type { MetricaBarrera } from "@/components/three/Barreras3D";
+import { valorBarrera } from "@/components/three/Barreras3D";
 
-const Superficie3D = dynamic(() => import("@/components/three/Superficie3D"), { ssr: false });
-const Nube3D = dynamic(() => import("@/components/three/Nube3D"), { ssr: false });
+const Barreras3D = dynamic(() => import("@/components/three/Barreras3D"), { ssr: false });
 
 const FRECUENCIAS: { id: Frecuencia; label: string }[] = [
   { id: "D", label: "Ruedas" },
@@ -44,8 +34,17 @@ const FRECUENCIAS: { id: Frecuencia; label: string }[] = [
 
 const SUGERIDOS = ["GGAL.BA", "YPFD.BA", "PAMP.BA", "BMA.BA", "TXAR.BA", "GGAL", "YPF", "SPY", "QQQ", "EWZ", "BTC-USD"];
 
+const VENTANAS: Record<Frecuencia, number[]> = { D: [3, 5, 10, 20], W: [2, 4, 8, 13], M: [1, 3, 6] };
+
+type Muestra = "rachas" | "parecidas" | "analogos";
+
 function hoyISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function sigma(z: number | null | undefined, d = 1): string {
+  if (z === null || z === undefined || !Number.isFinite(z)) return "—";
+  return `${z > 0 ? "+" : ""}${num(z, d)}σ`;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +61,8 @@ export default function RachasDashboard() {
   );
   const [kManual, setKManual] = useState<number | null>(params.get("k") ? Number(params.get("k")) || null : null);
   const [ignorarHoy, setIgnorarHoy] = useState(params.get("cerradas") === "1");
-  const [tolerancia, setTolerancia] = useState(0.5);
+  const [toleranciaZ, setToleranciaZ] = useState(0.75);
+  const [costo, setCosto] = useState(costoPorDefecto(ticker));
 
   const [bars, setBars] = useState<PriceBar[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,16 +72,21 @@ export default function RachasDashboard() {
   const [panel, setPanel] = useState<FilaPanel[] | null>(null);
   const [panelCargando, setPanelCargando] = useState(false);
 
-  const [vista3d, setVista3d] = useState<"mapa" | "nube">("mapa");
-  const [metrica, setMetrica] = useState<MetricaSuperficie>("exceso");
-  const [horizonteNube, setHorizonteNube] = useState<number>(HORIZONTES[frecuencia][3] ?? HORIZONTES[frecuencia][1]);
+  const [muestraDetalle, setMuestraDetalle] = useState<Muestra>("rachas");
+  const [muestraB, setMuestraB] = useState<Muestra>("rachas");
+  const [lado, setLado] = useState<Lado>("compra");
+  const [ventana, setVentana] = useState<number>(VENTANA_EXCURSION[frecuencia]);
+  const [metricaB, setMetricaB] = useState<MetricaBarrera>("ev");
   const [verTodas, setVerTodas] = useState(false);
 
   useEffect(() => {
-    setHorizonteNube(HORIZONTES[frecuencia][frecuencia === "M" ? 2 : 3]);
+    setVentana(VENTANA_EXCURSION[frecuencia]);
   }, [frecuencia]);
 
-  // URL compartible
+  useEffect(() => {
+    setCosto(costoPorDefecto(ticker));
+  }, [ticker]);
+
   useEffect(() => {
     const q = new URLSearchParams();
     q.set("t", ticker);
@@ -129,10 +134,49 @@ export default function RachasDashboard() {
 
   const estudio = useMemo<EstudioRacha | null>(() => {
     if (!usadas) return null;
-    return estudiarRacha(usadas, { frecuencia, kForzado: kManual ?? undefined, tolerancia });
-  }, [usadas, frecuencia, kManual, tolerancia]);
+    return estudiarRacha(usadas, { frecuencia, kForzado: kManual ?? undefined, toleranciaZ });
+  }, [usadas, frecuencia, kManual, toleranciaZ]);
 
-  const celdas = useMemo(() => (usadas ? superficie(usadas, frecuencia) : []), [usadas, frecuencia]);
+  const analogos = useMemo<ResultadoAnalogos | null>(
+    () => (estudio ? buscarAnalogos(estudio.barrasR, frecuencia) : null),
+    [estudio, frecuencia],
+  );
+
+  const muestras = useMemo(() => {
+    if (!estudio) return null;
+    const porH = (fwds: Array<Record<number, number | null>>) => {
+      const out: Record<number, number[]> = {};
+      for (const h of estudio.horizontes) out[h] = fwds.map((f) => f[h]).filter(isFiniteNumber);
+      return out;
+    };
+    const parecidas = estudio.ocurrencias.filter((o) => o.parecida);
+    const lista = analogos?.lista ?? [];
+    return {
+      rachas: { ret: porH(estudio.ocurrencias.map((o) => o.fwd)), idx: estudio.ocurrencias.map((o) => o.i) },
+      parecidas: { ret: porH(parecidas.map((o) => o.fwd)), idx: parecidas.map((o) => o.i) },
+      analogos: { ret: porH(lista.map((a) => a.fwd)), idx: lista.map((a) => a.i) },
+    } as Record<Muestra, { ret: Record<number, number[]>; idx: number[] }>;
+  }, [estudio, analogos]);
+
+  const tests = useMemo(() => {
+    if (!estudio || !muestras) return null;
+    const out = {} as Record<Muestra, TestVentaja[]>;
+    (Object.keys(muestras) as Muestra[]).forEach((m, i) => {
+      out[m] = testHorizontes(muestras[m].ret, estudio.baseFwd, estudio.horizontes, costo, 11 + i * 101);
+    });
+    return out;
+  }, [estudio, muestras, costo]);
+
+  const celdasB = useMemo<CeldaBarrera[]>(() => {
+    if (!estudio || !muestras) return [];
+    return superficieBarreras(estudio.barrasR, muestras[muestraB].idx, frecuencia, ventana, lado, costo);
+  }, [estudio, muestras, muestraB, frecuencia, ventana, lado, costo]);
+
+  const mejorB = useMemo(() => {
+    const validas = celdasB.filter((c) => c.n >= 10);
+    if (!validas.length) return null;
+    return validas.reduce((m, c) => (valorBarrera(c, metricaB) > valorBarrera(m, metricaB) ? c : m));
+  }, [celdasB, metricaB]);
 
   const cambiarTicker = (t: string) => {
     const limpio = t.trim().toUpperCase();
@@ -143,7 +187,12 @@ export default function RachasDashboard() {
   };
 
   const u = UNIDAD[frecuencia];
-  const kConSigno = estudio ? (estudio.sentido === "baja" ? -estudio.k : estudio.k) : 0;
+  const nombreMuestra: Record<Muestra, string> = estudio
+    ? { rachas: `Rachas de ${estudio.k}`, parecidas: "Intensidad parecida", analogos: "Análogos" }
+    : { rachas: "", parecidas: "", analogos: "" };
+  const opcionesMuestra = (Object.keys(nombreMuestra) as Muestra[])
+    .filter((m) => m !== "parecidas" || estudio?.zActual !== null)
+    .map((m) => ({ id: m, label: nombreMuestra[m] }));
 
   return (
     <div className="min-h-screen bg-background">
@@ -186,6 +235,19 @@ export default function RachasDashboard() {
                 </button>
               ))}
             </div>
+            <label className="flex items-center gap-1.5 text-xs text-muted">
+              Costo ida y vuelta
+              <input
+                type="number"
+                step="0.05"
+                min="0"
+                max="5"
+                value={Number((costo * 100).toFixed(2))}
+                onChange={(e) => setCosto(Math.max(0, Number(e.target.value) || 0) / 100)}
+                className="h-8 w-16 rounded border border-border bg-panel px-2 text-right font-mono"
+              />
+              %
+            </label>
             <label className="flex items-center gap-2 text-xs text-muted">
               <input type="checkbox" checked={ignorarHoy} onChange={(e) => setIgnorarHoy(e.target.checked)} />
               Sin la rueda de hoy
@@ -203,13 +265,7 @@ export default function RachasDashboard() {
       </header>
 
       <main className="mx-auto w-full max-w-[1600px] space-y-5 px-4 py-5">
-        <PanelManana
-          filas={panel}
-          cargando={panelCargando}
-          frecuencia={frecuencia}
-          activo={ticker}
-          onElegir={cambiarTicker}
-        />
+        <PanelManana filas={panel} cargando={panelCargando} frecuencia={frecuencia} activo={ticker} onElegir={cambiarTicker} />
 
         {error ? (
           <div className="flex items-center gap-2 rounded-md border border-danger/40 bg-panel px-4 py-3 text-sm text-danger">
@@ -220,7 +276,7 @@ export default function RachasDashboard() {
 
         {!estudio && cargando ? <div className="h-64 animate-pulse rounded-md border border-border bg-panel" /> : null}
 
-        {estudio ? (
+        {estudio && tests && muestras ? (
           <>
             <Encabezado estudio={estudio} ticker={ticker} kManual={kManual} onK={setKManual} />
 
@@ -228,45 +284,98 @@ export default function RachasDashboard() {
               <>
                 <Cifras estudio={estudio} />
 
+                <Caja
+                  titulo="¿Hay ventaja?"
+                  bajada={`Retorno medio después de la señal contra cualquier ${u.una} del papel. El p-valor sale de sortear 2.000 veces la misma cantidad de ${u.varias} al azar y está corregido por probar ${estudio.horizontes.length} horizontes (Holm). Neta: lo que dejaba operar en la dirección de la ventaja, menos ${pct(costo, 2, false)} de costo. Verde: p < 0,05 y neta positiva.`}
+                >
+                  <TablaVentaja tests={tests} nombres={nombreMuestra} opciones={opcionesMuestra.map((o) => o.id as Muestra)} frecuencia={frecuencia} />
+                </Caja>
+
                 <section className="grid gap-5 xl:grid-cols-12">
                   <div className="min-w-0 xl:col-span-8">
                     <Caja
-                      titulo={`Qué pasó después de ${plural(estudio.k, `${u.una} de ${estudio.sentido}`, `${u.varias} de ${estudio.sentido} seguidas`)}`}
-                      bajada={`Retorno desde el cierre en que la racha llegó a ${estudio.k}, contra cualquier ${u.una} del papel (la base). Caída parecida: entre ${pct(1 - tolerancia, 0, false)} y ${pct(1 + tolerancia, 0, false)} de la variación de hoy.`}
+                      titulo="Distribución por horizonte"
+                      bajada={
+                        muestraDetalle === "parecidas"
+                          ? `Solo las veces con intensidad a menos de ${num(toleranciaZ, 2)}σ de la de hoy (${sigma(estudio.zActual)}).`
+                          : muestraDetalle === "analogos"
+                            ? `Los ${num(analogos?.lista.length ?? 0)} días más parecidos a hoy en racha, intensidad, retorno corto, distancia a la media, volatilidad y gap.`
+                            : `Todas las veces que una racha de ${estudio.sentido} llegó a ${estudio.k} ${u.varias}.`
+                      }
                       extra={
-                        estudio.variacionActual !== null ? (
-                          <label className="flex items-center gap-2 text-xs text-muted">
-                            Parecida ±
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <Segmentado valor={muestraDetalle} opciones={opcionesMuestra} onChange={(v) => setMuestraDetalle(v as Muestra)} />
+                          {muestraDetalle === "parecidas" ? (
                             <select
-                              value={tolerancia}
-                              onChange={(e) => setTolerancia(Number(e.target.value))}
-                              className="rounded border border-border bg-panel px-1 py-0.5"
+                              value={toleranciaZ}
+                              onChange={(e) => setToleranciaZ(Number(e.target.value))}
+                              className="rounded border border-border bg-panel px-1 py-1"
+                              aria-label="Tolerancia de intensidad"
                             >
-                              {[0.25, 0.5, 0.75].map((t) => (
+                              {[0.5, 0.75, 1].map((t) => (
                                 <option key={t} value={t}>
-                                  {t * 100}%
+                                  ±{num(t, 2)}σ
                                 </option>
                               ))}
                             </select>
-                          </label>
-                        ) : null
+                          ) : null}
+                        </div>
                       }
                     >
-                      <TablaHorizontes estudio={estudio} />
+                      <TablaDetalle
+                        horizontes={estudio.horizontes}
+                        frecuencia={frecuencia}
+                        m={Object.fromEntries(estudio.horizontes.map((h) => [h, metricas(muestras[muestraDetalle].ret[h] ?? [])]))}
+                        base={estudio.base}
+                      />
                     </Caja>
                   </div>
                   <div className="min-w-0 xl:col-span-4">
-                    <Caja titulo="Retorno medio por horizonte" bajada="Racha contra la base del mismo papel.">
+                    <Caja titulo="Retorno medio por horizonte" bajada={`Todas las rachas de ${estudio.k} contra la base del mismo papel.`}>
                       <CurvaAdelante estudio={estudio} />
                     </Caja>
                   </div>
                 </section>
 
+                <Caja
+                  titulo="Stop y target: qué se tocaba primero"
+                  bajada={`Entrando al cierre del día de la señal y saliendo a las ${ventana} ${u.varias} si no tocó nada. Si en una misma ${u.una} toca los dos, cuenta como stop; si abre más allá del nivel, se ejecuta a la apertura. Neto de ${pct(costo, 2, false)} de costo.`}
+                  extra={
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <Segmentado valor={muestraB} opciones={opcionesMuestra} onChange={(v) => setMuestraB(v as Muestra)} />
+                      <Segmentado
+                        valor={lado}
+                        opciones={[
+                          { id: "compra", label: "Compra" },
+                          { id: "venta", label: "Venta" },
+                        ]}
+                        onChange={(v) => setLado(v as Lado)}
+                      />
+                      <Segmentado
+                        valor={String(ventana)}
+                        opciones={VENTANAS[frecuencia].map((v) => ({ id: String(v), label: `${v} ${u.corta}` }))}
+                        onChange={(v) => setVentana(Number(v))}
+                      />
+                      <Segmentado
+                        valor={metricaB}
+                        opciones={[
+                          { id: "ev", label: "Esperado" },
+                          { id: "exceso", label: "vs. cualquier día" },
+                          { id: "pTarget", label: "P(target)" },
+                        ]}
+                        onChange={(v) => setMetricaB(v as MetricaBarrera)}
+                      />
+                    </div>
+                  }
+                >
+                  <StopTarget celdas={celdasB} mejor={mejorB} metrica={metricaB} frecuencia={frecuencia} lado={lado} ventana={ventana} />
+                </Caja>
+
                 <section className="grid gap-5 xl:grid-cols-12">
                   <div className="min-w-0 xl:col-span-5">
                     <Caja
                       titulo="¿Sigue la racha?"
-                      bajada={`De las ${num(estudio.ocurrencias.length)} veces que llegó a ${estudio.k}, cuántas llegaron a cada largo (eje: ${UNIDAD[frecuencia].varias} seguidas).`}
+                      bajada={`De las ${num(estudio.ocurrencias.length)} veces que llegó a ${estudio.k}, cuántas llegaron a cada largo (${u.varias} seguidas).`}
                     >
                       <Supervivencia estudio={estudio} />
                     </Caja>
@@ -283,58 +392,14 @@ export default function RachasDashboard() {
               </>
             )}
 
-            <Caja
-              titulo={vista3d === "mapa" ? "Mapa de rachas en 3D" : "Cada vez que pasó, en 3D"}
-              bajada={
-                vista3d === "mapa"
-                  ? `Cada columna es un largo de racha y cada fila un horizonte. La altura es ${
-                      metrica === "exceso" ? "el retorno medio menos la base" : metrica === "media" ? "el retorno medio" : "la probabilidad de suba menos 50%"
-                    }. Translúcidas: menos de 15 casos; tapa oscura: valor fuera de escala; grises: menos de 8 casos. Borde ámbar: la racha de hoy. Arrastrá para girar.`
-                  : `Cada esfera es una vez que la racha llegó a ${estudio.k}: a lo ancho la variación acumulada, al fondo el tiempo, en altura el retorno posterior. Translúcidas: caída no parecida a la de hoy.`
-              }
-              extra={
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <Segmentado
-                    valor={vista3d}
-                    opciones={[
-                      { id: "mapa", label: "Mapa" },
-                      { id: "nube", label: "Ocurrencias" },
-                    ]}
-                    onChange={(v) => setVista3d(v as "mapa" | "nube")}
-                  />
-                  {vista3d === "mapa" ? (
-                    <Segmentado
-                      valor={metrica}
-                      opciones={[
-                        { id: "exceso", label: "vs. base" },
-                        { id: "media", label: "Media" },
-                        { id: "pSuba", label: "P(suba)" },
-                      ]}
-                      onChange={(v) => setMetrica(v as MetricaSuperficie)}
-                    />
-                  ) : (
-                    <Segmentado
-                      valor={String(horizonteNube)}
-                      opciones={estudio.horizontes.map((h) => ({ id: String(h), label: `${h} ${u.corta}` }))}
-                      onChange={(v) => setHorizonteNube(Number(v))}
-                    />
-                  )}
-                </div>
-              }
-            >
-              {vista3d === "mapa" ? (
-                <Superficie3D celdas={celdas} frecuencia={frecuencia} kActual={kConSigno} metrica={metrica} />
-              ) : estudio.ocurrencias.length ? (
-                <Nube3D
-                  ocurrencias={estudio.ocurrencias}
-                  horizonte={horizonteNube}
-                  frecuencia={frecuencia}
-                  variacionActual={estudio.variacionActual}
-                />
-              ) : (
-                <p className="py-16 text-center text-sm text-muted">No hay ocurrencias anteriores para dibujar.</p>
-              )}
-            </Caja>
+            {analogos && analogos.lista.length ? (
+              <Caja
+                titulo={`Los ${num(analogos.lista.length)} días más parecidos a hoy`}
+                bajada={`Distancia ponderada en ${RASGOS.length} rasgos medidos en desvíos de su propia historia, separados para no repetir el mismo episodio. ${num(analogos.mismaRacha)} de ${num(analogos.lista.length)} venían con racha del mismo sentido.`}
+              >
+                <TablaAnalogos analogos={analogos} estudio={estudio} />
+              </Caja>
+            ) : null}
 
             {estudio.ocurrencias.length ? (
               <Caja
@@ -352,8 +417,9 @@ export default function RachasDashboard() {
 
             <p className="pb-6 text-xs text-tenue">
               {num(estudio.barras)} {u.varias} de {ticker} entre el {fecha(estudio.desde)} y el {fecha(estudio.hasta)}, con precios
-              ajustados por dividendos y splits. Una {u.una} sin cambio corta la racha. Es estadística descriptiva de lo que pasó, no
-              una recomendación.
+              ajustados por dividendos y splits. Una {u.una} sin cambio corta la racha. Intensidad: variación logarítmica de la racha
+              dividida por la volatilidad previa y por la raíz del largo. Es estadística descriptiva de lo que pasó, no una
+              recomendación.
             </p>
           </>
         ) : null}
@@ -363,56 +429,6 @@ export default function RachasDashboard() {
 }
 
 // ---------------------------------------------------------------------------
-// Piezas
-
-function Caja({
-  titulo,
-  bajada,
-  extra,
-  children,
-}: {
-  titulo: string;
-  bajada?: string;
-  extra?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="h-full rounded-md border border-border bg-panel">
-      <div className="flex flex-wrap items-start justify-between gap-3 px-5 pt-4">
-        <div className="max-w-3xl">
-          <h2 className="font-serif text-xl text-foreground">{titulo}</h2>
-          {bajada ? <p className="mt-1 text-xs leading-relaxed text-muted">{bajada}</p> : null}
-        </div>
-        {extra}
-      </div>
-      <div className="px-5 pb-5 pt-3">{children}</div>
-    </section>
-  );
-}
-
-function Segmentado({
-  valor,
-  opciones,
-  onChange,
-}: {
-  valor: string;
-  opciones: { id: string; label: string }[];
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="flex rounded border border-border bg-background p-0.5">
-      {opciones.map((o) => (
-        <button
-          key={o.id}
-          onClick={() => onChange(o.id)}
-          className={`rounded-sm px-2.5 py-1 ${valor === o.id ? "bg-accent text-white" : "text-muted hover:text-foreground"}`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 function PanelManana({
   filas,
@@ -428,29 +444,31 @@ function PanelManana({
   onElegir: (t: string) => void;
 }) {
   const u = UNIDAD[frecuencia];
-  const h1 = HORIZONTES[frecuencia][0];
-  const hM = HORIZONTES[frecuencia][frecuencia === "D" ? 3 : 2];
-  const ordenadas = filas ? [...filas].sort((a, b) => (b.percentilLargo ?? 0) - (a.percentilLargo ?? 0)) : null;
+  const h = HORIZONTES[frecuencia][frecuencia === "D" ? 3 : 2];
+  const ordenadas = filas
+    ? [...filas].sort((a, b) => Number(b.significativa) - Number(a.significativa) || Math.abs(b.z ?? 0) - Math.abs(a.z ?? 0))
+    : null;
   return (
     <Caja
       titulo="Rachas de hoy"
-      bajada={`Racha actual de cada papel, ordenada por lo rara que es: qué porcentaje de las rachas del mismo sentido fueron más cortas. Clic para abrir el estudio.`}
+      bajada={`Primero los papeles con ventaja significativa en algún horizonte, después por intensidad. Ventaja: retorno medio a ${h} ${u.varias} después de rachas iguales, menos el de cualquier ${u.una}. Clic para abrir el estudio.`}
     >
       {cargando && !ordenadas ? <div className="h-32 animate-pulse rounded bg-background" /> : null}
       {ordenadas ? (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[880px] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-[11px] uppercase tracking-wider text-muted">
                 <th className="py-2 pr-3 font-medium">Papel</th>
                 <th className="py-2 pr-3 font-medium">Racha</th>
                 <th className="py-2 pr-3 text-right font-medium">Variación</th>
-                <th className="py-2 pr-3 text-right font-medium">Más larga que</th>
+                <th className="py-2 pr-3 text-right font-medium">Intensidad</th>
+                <th className="py-2 pr-3 text-right font-medium">Más intensa que</th>
                 <th className="py-2 pr-3 text-right font-medium">Veces</th>
-                <th className="py-2 pr-3 text-right font-medium">Subió a {h1} {u.corta}</th>
-                <th className="py-2 pr-3 text-right font-medium">Media {h1} {u.corta}</th>
-                <th className="py-2 pr-3 text-right font-medium">Media {hM} {u.corta}</th>
-                <th className="py-2 text-right font-medium">Base {h1} {u.corta}</th>
+                <th className="py-2 pr-3 text-right font-medium">Media {h} {u.corta}</th>
+                <th className="py-2 pr-3 text-right font-medium">Ventaja {h} {u.corta}</th>
+                <th className="py-2 pr-3 text-right font-medium">p ajust.</th>
+                <th className="py-2 text-left font-medium">Lectura</th>
               </tr>
             </thead>
             <tbody className="font-mono">
@@ -471,14 +489,21 @@ function PanelManana({
                     )}
                   </td>
                   <td className={`py-1.5 pr-3 text-right ${colorSigno(f.variacion)}`}>{pct(f.variacion)}</td>
-                  <td className="py-1.5 pr-3 text-right">
-                    <span className={(f.percentilLargo ?? 0) >= 0.9 ? "font-semibold text-signal" : ""}>{prob(f.percentilLargo)}</span>
-                  </td>
+                  <td className={`py-1.5 pr-3 text-right ${Math.abs(f.z ?? 0) >= 2 ? "font-semibold text-signal" : ""}`}>{sigma(f.z)}</td>
+                  <td className="py-1.5 pr-3 text-right">{prob(f.percentilZ)}</td>
                   <td className="py-1.5 pr-3 text-right">{num(f.n)}</td>
-                  <td className="py-1.5 pr-3 text-right">{f.n >= 5 ? prob(f.pSuba1) : "—"}</td>
-                  <td className={`py-1.5 pr-3 text-right ${colorSigno(f.media1)}`}>{f.n >= 5 ? pct(f.media1, 2) : "—"}</td>
-                  <td className={`py-1.5 pr-3 text-right ${colorSigno(f.mediaH)}`}>{f.n >= 5 ? pct(f.mediaH, 2) : "—"}</td>
-                  <td className="py-1.5 text-right text-muted">{pct(f.base1, 2)}</td>
+                  <td className={`py-1.5 pr-3 text-right ${colorSigno(f.media)}`}>{f.n >= 5 ? pct(f.media, 2) : "—"}</td>
+                  <td className={`py-1.5 pr-3 text-right ${colorSigno(f.ventaja)}`}>{f.n >= 5 ? pct(f.ventaja, 2) : "—"}</td>
+                  <td className="py-1.5 pr-3 text-right text-muted">{f.pAjustado !== null ? num(f.pAjustado, 2) : "—"}</td>
+                  <td className="py-1.5 font-sans text-xs">
+                    {f.n < 10 ? (
+                      <span className="text-tenue">pocos casos</span>
+                    ) : f.significativa ? (
+                      <span className="rounded bg-success/10 px-1.5 py-0.5 font-medium text-success">hay ventaja</span>
+                    ) : (
+                      <span className="text-muted">sin ventaja</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -486,17 +511,6 @@ function PanelManana({
         </div>
       ) : null}
     </Caja>
-  );
-}
-
-function Fichas({ k }: { k: number }) {
-  const n = Math.min(Math.abs(k), 12);
-  return (
-    <span className="mr-1 inline-flex gap-[2px] align-middle">
-      {Array.from({ length: n }).map((_, i) => (
-        <span key={i} className={`inline-block h-2.5 w-1.5 rounded-[1px] ${k < 0 ? "bg-danger" : "bg-success"}`} />
-      ))}
-    </span>
   );
 }
 
@@ -536,7 +550,8 @@ function Encabezado({
               </span>
               {estudio.variacionActual !== null ? (
                 <>
-                  , {estudio.variacionActual < 0 ? "bajó" : "subió"} {pct(Math.abs(estudio.variacionActual), 1, false)} en la racha
+                  , {estudio.variacionActual < 0 ? "bajó" : "subió"} {pct(Math.abs(estudio.variacionActual), 1, false)}
+                  {estudio.zActual !== null ? <span className="text-muted"> ({sigma(estudio.zActual)})</span> : null}
                 </>
               ) : null}
             </p>
@@ -566,22 +581,19 @@ function Cifras({ estudio }: { estudio: EstudioRacha }) {
   const u = UNIDAD[estudio.frecuencia];
   const sigue = estudio.supervivencia[0];
   const tiles: { cifra: string; texto: string; tono?: string }[] = [
+    { cifra: num(estudio.ocurrencias.length), texto: `veces que una racha de ${estudio.sentido} llegó a ${estudio.k} ${u.varias}` },
     {
-      cifra: num(estudio.ocurrencias.length),
-      texto: `veces que una racha de ${estudio.sentido} llegó a ${estudio.k} ${u.varias}`,
+      cifra: sigma(estudio.zActual),
+      texto:
+        estudio.percentilZ !== null
+          ? `de intensidad: más fuerte que el ${prob(estudio.percentilZ)} de esas ${num(estudio.ocurrencias.length)} veces`
+          : "intensidad de la racha",
+      tono: Math.abs(estudio.zActual ?? 0) >= 2 ? "text-signal" : undefined,
     },
-    {
-      cifra: prob(estudio.percentilLargo),
-      texto: `de las ${num(estudio.rachasMismoSentido)} rachas de ${estudio.sentido} fueron más cortas`,
-      tono: (estudio.percentilLargo ?? 0) >= 0.9 ? "text-signal" : undefined,
-    },
+    { cifra: prob(estudio.percentilLargo), texto: `de las ${num(estudio.rachasMismoSentido)} rachas de ${estudio.sentido} fueron más cortas` },
     {
       cifra: sigue ? prob(sigue.prob) : "—",
-      texto: sigue ? `siguió al menos una ${u.una} más (llegó a ${sigue.largo})` : "sin datos para la siguiente",
-    },
-    {
-      cifra: estudio.largoEsperado !== null ? num(estudio.largoEsperado, 1) : "—",
-      texto: `${u.varias} de largo final promedio, dado que llegó a ${estudio.k}`,
+      texto: sigue ? `siguió al menos una ${u.una} más (una moneda daría 50%)` : "sin datos para la siguiente",
     },
     {
       cifra: estudio.maxHistorico ? num(estudio.maxHistorico.largo) : "—",
@@ -602,38 +614,96 @@ function Cifras({ estudio }: { estudio: EstudioRacha }) {
   );
 }
 
-function celdaProb(m: Metricas | undefined) {
-  if (!m || m.n < 5) return <span className="text-tenue">—</span>;
-  return (
-    <span title={m.ic ? `IC 95%: ${prob(m.ic[0])} a ${prob(m.ic[1])}` : undefined}>
-      {prob(m.pSuba)}
-      <span className="ml-1 text-[10px] text-tenue">{m.ic ? `${prob(m.ic[0])}–${prob(m.ic[1])}` : ""}</span>
-    </span>
-  );
-}
-
-function TablaHorizontes({ estudio }: { estudio: EstudioRacha }) {
-  const u = UNIDAD[estudio.frecuencia];
-  const hayParecidas = estudio.variacionActual !== null;
-  const th = "py-2 px-2 text-right font-medium";
+function TablaVentaja({
+  tests,
+  nombres,
+  opciones,
+  frecuencia,
+}: {
+  tests: Record<Muestra, TestVentaja[]>;
+  nombres: Record<Muestra, string>;
+  opciones: Muestra[];
+  frecuencia: Frecuencia;
+}) {
+  const u = UNIDAD[frecuencia];
+  const horizontes = tests.rachas.map((t) => t.h);
+  const td = "px-2 text-right";
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[820px] text-sm">
+      <table className="w-full min-w-[860px] text-sm">
         <thead>
           <tr className="text-[11px] uppercase tracking-wider text-muted">
             <th />
-            <th colSpan={6} className="border-b border-accent/40 px-2 pb-1 text-center font-medium text-accent">
-              Todas las rachas de {estudio.k}
-            </th>
-            {hayParecidas ? (
-              <th colSpan={3} className="border-b border-signal/50 px-2 pb-1 text-center font-medium text-signal">
-                Caída parecida
+            {opciones.map((m) => (
+              <th key={m} colSpan={4} className="border-b border-accent/40 px-2 pb-1 text-center font-medium text-accent">
+                {nombres[m]} · {num(tests[m][0]?.n ?? 0)} casos
               </th>
-            ) : null}
-            <th colSpan={2} className="border-b border-border px-2 pb-1 text-center font-medium">
-              Base
-            </th>
+            ))}
+            <th className="border-b border-border px-2 pb-1 text-center font-medium">Base</th>
           </tr>
+          <tr className="border-b border-border text-[11px] uppercase tracking-wider text-muted">
+            <th className="py-2 pr-2 text-left font-medium">A</th>
+            {opciones.flatMap((m) => [
+              <th key={`${m}-m`} className={`${td} py-2 font-medium`}>Media</th>,
+              <th key={`${m}-v`} className={`${td} font-medium`}>Ventaja</th>,
+              <th key={`${m}-n`} className={`${td} font-medium`}>Neta</th>,
+              <th key={`${m}-p`} className={`${td} font-medium`}>p</th>,
+            ])}
+            <th className={`${td} font-medium`}>Media</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono">
+          {horizontes.map((h, i) => (
+            <tr key={h} className="border-b border-border/70">
+              <td className="py-1.5 pr-2 font-sans">
+                {h} {h === 1 ? u.una : u.varias}
+              </td>
+              {opciones.flatMap((m) => {
+                const t = tests[m][i];
+                if (!t || t.n < 5) {
+                  return [0, 1, 2, 3].map((x) => (
+                    <td key={`${m}-${x}`} className={`${td} text-tenue`}>
+                      —
+                    </td>
+                  ));
+                }
+                const f = t.significativa ? "bg-success/10" : "";
+                return [
+                  <td key={`${m}-m`} className={`${td} ${f} ${colorSigno(t.media)}`}>{pct(t.media, 2)}</td>,
+                  <td key={`${m}-v`} className={`${td} ${f} ${colorSigno(t.ventaja)}`}>{pct(t.ventaja, 2)}</td>,
+                  <td key={`${m}-n`} className={`${td} ${f} ${colorSigno(t.neta)}`}>{pct(t.neta, 2)}</td>,
+                  <td key={`${m}-p`} className={`${td} ${f} ${t.significativa ? "font-semibold text-success" : "text-muted"}`}>
+                    {t.pAjustado !== null ? num(t.pAjustado, 2) : "—"}
+                  </td>,
+                ];
+              })}
+              <td className={`${td} text-muted`}>{pct(tests.rachas[i]?.mediaBase, 2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TablaDetalle({
+  horizontes,
+  frecuencia,
+  m,
+  base,
+}: {
+  horizontes: number[];
+  frecuencia: Frecuencia;
+  m: Record<number, Metricas>;
+  base: Record<number, Metricas>;
+}) {
+  const u = UNIDAD[frecuencia];
+  const th = "py-2 px-2 text-right font-medium";
+  const n0 = m[horizontes[0]]?.n ?? 0;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] text-sm">
+        <thead>
           <tr className="border-b border-border text-[11px] uppercase tracking-wider text-muted">
             <th className="py-2 pr-2 text-left font-medium">A</th>
             <th className={th}>Casos</th>
@@ -642,22 +712,12 @@ function TablaHorizontes({ estudio }: { estudio: EstudioRacha }) {
             <th className={th}>Mediana</th>
             <th className={th}>p10 / p90</th>
             <th className={th}>CVaR 95</th>
-            {hayParecidas ? (
-              <>
-                <th className={th}>Casos</th>
-                <th className={th}>Subió</th>
-                <th className={th}>Media</th>
-              </>
-            ) : null}
-            <th className={th}>Subió</th>
-            <th className={th}>Media</th>
+            <th className={th}>Base subió</th>
           </tr>
         </thead>
         <tbody className="font-mono">
-          {estudio.horizontes.map((h) => {
-            const t = estudio.todas[h];
-            const p = estudio.parecidas[h];
-            const b = estudio.base[h];
+          {horizontes.map((h) => {
+            const t = m[h];
             const ok = t && t.n >= 5;
             return (
               <tr key={h} className="border-b border-border/70">
@@ -670,146 +730,167 @@ function TablaHorizontes({ estudio }: { estudio: EstudioRacha }) {
                 <td className={`px-2 text-right ${ok ? colorSigno(t.mediana) : ""}`}>{ok ? pct(t.mediana, 2) : "—"}</td>
                 <td className="px-2 text-right text-muted">{ok ? `${pct(t.p10, 1)} / ${pct(t.p90, 1)}` : "—"}</td>
                 <td className="px-2 text-right text-danger">{ok ? pct(t.cvar95, 1) : "—"}</td>
-                {hayParecidas ? (
-                  <>
-                    <td className="px-2 text-right">{num(p?.n)}</td>
-                    <td className="px-2 text-right">{celdaProb(p)}</td>
-                    <td className={`px-2 text-right ${p && p.n >= 5 ? colorSigno(p.media) : ""}`}>{p && p.n >= 5 ? pct(p.media, 2) : "—"}</td>
-                  </>
-                ) : null}
-                <td className="px-2 text-right text-muted">{prob(b?.pSuba)}</td>
-                <td className="px-2 text-right text-muted">{pct(b?.media, 2)}</td>
+                <td className="px-2 text-right text-muted">{prob(base[h]?.pSuba)}</td>
               </tr>
             );
           })}
         </tbody>
       </table>
-      {estudio.ocurrencias.length < 10 ? (
-        <p className="mt-2 text-xs text-signal">
-          Pocos casos ({num(estudio.ocurrencias.length)}): tomalo como anécdota, no como estadística.
-        </p>
-      ) : null}
+      {n0 < 10 ? <p className="mt-2 text-xs text-signal">Pocos casos ({num(n0)}): tomalo como anécdota, no como estadística.</p> : null}
     </div>
   );
 }
 
-function CurvaAdelante({ estudio }: { estudio: EstudioRacha }) {
-  const u = UNIDAD[estudio.frecuencia];
-  const datos = estudio.horizontes.map((h) => ({
-    h: `${h} ${u.corta}`,
-    racha: estudio.todas[h]?.n >= 5 ? (estudio.todas[h].media ?? 0) * 100 : null,
-    mediana: estudio.todas[h]?.n >= 5 ? (estudio.todas[h].mediana ?? 0) * 100 : null,
-    base: (estudio.base[h]?.media ?? 0) * 100,
-  }));
+function StopTarget({
+  celdas,
+  mejor,
+  metrica,
+  frecuencia,
+  lado,
+  ventana,
+}: {
+  celdas: CeldaBarrera[];
+  mejor: CeldaBarrera | null;
+  metrica: MetricaBarrera;
+  frecuencia: Frecuencia;
+  lado: Lado;
+  ventana: number;
+}) {
+  const u = UNIDAD[frecuencia];
+  if (!celdas.length || (celdas[0]?.n ?? 0) < 10) {
+    return <p className="py-10 text-center text-sm text-muted">Menos de 10 casos con la ventana completa: no alcanza para simular.</p>;
+  }
+  const stops = Array.from(new Set(celdas.map((c) => c.stop))).sort((a, b) => a - b);
+  const targets = Array.from(new Set(celdas.map((c) => c.target))).sort((a, b) => a - b);
+  const escala = Math.max(...celdas.map((c) => Math.abs(valorBarrera(c, metrica))), 1e-6);
+  const fondo = (v: number) => {
+    const a = Math.min(1, Math.abs(v) / escala) * 0.55;
+    return v >= 0 ? `rgba(79,122,74,${a})` : `rgba(164,71,59,${a})`;
+  };
+  const texto = (c: CeldaBarrera) => (metrica === "pTarget" ? prob(c.pTarget) : pct(valorBarrera(c, metrica), 2));
   return (
-    <div className="h-[300px]">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={datos} margin={{ top: 10, right: 16, left: -8, bottom: 0 }}>
-          <CartesianGrid stroke="#ECEAE4" vertical={false} />
-          <XAxis dataKey="h" tick={{ fontSize: 11, fill: "#6B7276" }} axisLine={{ stroke: "#D9D6CE" }} tickLine={false} />
-          <YAxis
-            tick={{ fontSize: 11, fill: "#6B7276" }}
-            axisLine={false}
-            tickLine={false}
-            tickFormatter={(v: number) => `${v.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%`}
-          />
-          <ReferenceLine y={0} stroke="#9AA0A3" />
-          <Tooltip
-            formatter={(v) => (typeof v === "number" ? `${v.toLocaleString("es-AR", { maximumFractionDigits: 2 })}%` : "—")}
-            contentStyle={{ fontSize: 12, borderColor: "#E6E4DE" }}
-          />
-          <Line type="monotone" dataKey="base" name="Base" stroke="#9AA0A3" strokeDasharray="4 3" dot={false} strokeWidth={1.5} />
-          <Line type="monotone" dataKey="mediana" name="Mediana racha" stroke="#B07A2A" dot={{ r: 2 }} strokeWidth={1.5} />
-          <Line type="monotone" dataKey="racha" name="Media racha" stroke="#1F6E7E" dot={{ r: 3 }} strokeWidth={2.2} />
-        </LineChart>
-      </ResponsiveContainer>
-      <div className="mt-1 flex gap-4 text-[11px] text-muted">
-        <span className="flex items-center gap-1">
-          <i className="inline-block h-0.5 w-4 bg-accent" /> media racha
-        </span>
-        <span className="flex items-center gap-1">
-          <i className="inline-block h-0.5 w-4 bg-signal" /> mediana racha
-        </span>
-        <span className="flex items-center gap-1">
-          <i className="inline-block h-0.5 w-4 border-t border-dashed border-tenue" /> base
-        </span>
+    <div className="space-y-4">
+      {mejor ? (
+        <p className="text-sm leading-relaxed">
+          <span className="font-semibold">
+            Mejor combinación: {lado === "compra" ? "comprar" : "vender"} con stop −{pct(mejor.stop, 1, false)} y target +
+            {pct(mejor.target, 0, false)}
+          </span>
+          . Tocó el target primero el {prob(mejor.pTarget)} de las veces, el stop el {prob(mejor.pStop)}, y el {prob(mejor.pNada)}{" "}
+          salió a las {ventana} {u.varias}. Esperado {pct(mejor.ev, 2)} neto por operación, contra {pct(mejor.evBase, 2)} entrando
+          cualquier día ({num(mejor.n)} operaciones).
+          {mejor.stop === stops[stops.length - 1] ? (
+            <span className="text-muted"> Está en el stop más amplio de la grilla: en la práctica, casi no usar stop.</span>
+          ) : null}
+          {mejor.ev <= 0 ? <span className="text-danger"> Ninguna combinación dejaba plata después de costos.</span> : null}
+        </p>
+      ) : null}
+      <div className="grid gap-5 xl:grid-cols-12">
+        <div className="min-w-0 xl:col-span-7">
+          <Barreras3D celdas={celdas} metrica={metrica} mejor={mejor} />
+        </div>
+        <div className="min-w-0 overflow-x-auto xl:col-span-5">
+          <table className="w-full min-w-[460px] font-mono text-xs">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-muted">
+                <th className="py-1.5 pr-1 text-left font-medium">Stop \ Target</th>
+                {targets.map((t) => (
+                  <th key={t} className="px-1 text-right font-medium">
+                    +{pct(t, 0, false)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {stops.map((s) => (
+                <tr key={s}>
+                  <td className="py-1 pr-1 text-muted">−{pct(s, s < 0.02 ? 1 : 0, false)}</td>
+                  {targets.map((t) => {
+                    const c = celdas.find((x) => x.stop === s && x.target === t) as CeldaBarrera;
+                    const esMejor = mejor && c.stop === mejor.stop && c.target === mejor.target;
+                    return (
+                      <td
+                        key={t}
+                        className={`px-1 py-1 text-right ${esMejor ? "outline outline-2 outline-signal" : ""}`}
+                        style={{ background: fondo(valorBarrera(c, metrica)) }}
+                        title={`target primero ${prob(c.pTarget)} · stop ${prob(c.pStop)} · ninguno ${prob(c.pNada)} · cualquier día ${pct(c.evBase, 2)}`}
+                      >
+                        {texto(c)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-2 text-[11px] text-muted">
+            {metrica === "ev"
+              ? "Resultado esperado por operación, neto de costos."
+              : metrica === "exceso"
+                ? "Resultado esperado menos el de entrar cualquier día con el mismo stop y target."
+                : "Porcentaje de veces que tocó el target antes que el stop."}{" "}
+            Pasá el mouse por una celda para ver el detalle.
+          </p>
+        </div>
       </div>
     </div>
   );
 }
 
-function Supervivencia({ estudio }: { estudio: EstudioRacha }) {
-  const datos = estudio.supervivencia.map((f) => ({
-    largo: `${f.largo}`,
-    p: (f.prob ?? 0) * 100,
-    llegan: f.llegan,
-  }));
-  if (!datos.length) return <p className="py-10 text-center text-sm text-muted">Nunca pasó de {estudio.k}.</p>;
-  return (
-    <div className="h-[260px]">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={datos} margin={{ top: 18, right: 8, left: -18, bottom: 0 }}>
-          <CartesianGrid stroke="#ECEAE4" vertical={false} />
-          <XAxis
-            dataKey="largo"
-            tick={{ fontSize: 11, fill: "#6B7276" }}
-            axisLine={{ stroke: "#D9D6CE" }}
-            tickLine={false}
-          />
-          <YAxis tick={{ fontSize: 11, fill: "#6B7276" }} axisLine={false} tickLine={false} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
-          <Tooltip
-            formatter={(v, _n, item) => [`${Number(v).toFixed(0)}% (${(item.payload as { llegan: number }).llegan} casos)`, "llegaron"]}
-            contentStyle={{ fontSize: 12, borderColor: "#E6E4DE" }}
-          />
-          <Bar dataKey="p" radius={[2, 2, 0, 0]}>
-            {datos.map((d, i) => (
-              <Cell key={d.largo} fill={estudio.sentido === "baja" ? "#A4473B" : "#4F7A4A"} fillOpacity={1 - i * 0.08} />
-            ))}
-            <LabelList dataKey="p" position="top" formatter={(v) => `${Number(v).toFixed(0)}%`} style={{ fontSize: 10, fill: "#6B7276" }} />
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-function Recorrido({ estudio }: { estudio: EstudioRacha }) {
+function TablaAnalogos({ analogos, estudio }: { analogos: ResultadoAnalogos; estudio: EstudioRacha }) {
   const u = UNIDAD[estudio.frecuencia];
-  const filas = [
-    { label: "Peor caída promedio (MAE)", v: estudio.maeTodas, tono: "text-danger" },
-    { label: "Mejor suba promedio (MFE)", v: estudio.mfeTodas, tono: "text-success" },
-    { label: `Peor caída promedio de cualquier ${u.una}`, v: estudio.baseMae, tono: "text-muted" },
-    { label: `${u.una[0].toUpperCase()}${u.una.slice(1)} que cortó la racha, promedio`, v: estudio.corteMedia, tono: colorSigno(estudio.corteMedia) },
+  const diario = estudio.frecuencia === "D";
+  const celdas = (r: Record<string, number>) => [
+    <td key="r" className={`px-2 text-right ${colorSigno(r.racha)}`}>{r.racha > 0 ? `+${r.racha}` : r.racha}</td>,
+    <td key="z" className="px-2 text-right">{sigma(r.z)}</td>,
+    <td key="c" className="px-2 text-right">{sigma(r.r5)}</td>,
+    <td key="m" className={`px-2 text-right ${colorSigno(r.ma)}`}>{pct(Math.exp(r.ma) - 1, 0)}</td>,
+    <td key="v" className="px-2 text-right">{pct(Math.exp(r.vol) - 1, 0)}</td>,
+    ...(diario ? [<td key="g" className="px-2 text-right">{sigma(r.gap)}</td>] : []),
   ];
-  const maes = estudio.ocurrencias.map((o) => o.mae).filter((x): x is number => x !== null);
-  const mfes = estudio.ocurrencias.map((o) => o.mfe).filter((x): x is number => x !== null);
-  const pDe = (arr: number[], umbral: number, abajo: boolean) =>
-    arr.length ? arr.filter((x) => (abajo ? x <= umbral : x >= umbral)).length / arr.length : null;
-  const umbrales = estudio.frecuencia === "D" ? [0.03, 0.05, 0.1] : estudio.frecuencia === "W" ? [0.05, 0.1, 0.2] : [0.1, 0.2, 0.3];
   return (
-    <div className="grid gap-5 md:grid-cols-2">
-      <dl className="space-y-2.5">
-        {filas.map((f) => (
-          <div key={f.label} className="flex items-baseline justify-between gap-3 border-b border-border/70 pb-2">
-            <dt className="text-sm text-muted">{f.label}</dt>
-            <dd className={`font-mono text-lg ${f.tono}`}>{pct(f.v, 1)}</dd>
-          </div>
-        ))}
-      </dl>
-      <table className="w-full self-start text-sm">
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[980px] text-sm">
         <thead>
           <tr className="border-b border-border text-[11px] uppercase tracking-wider text-muted">
-            <th className="py-2 text-left font-medium">Tocó</th>
-            <th className="py-2 text-right font-medium">Abajo</th>
-            <th className="py-2 text-right font-medium">Arriba</th>
+            <th className="py-2 pr-2 text-left font-medium">Fecha</th>
+            <th className="px-2 text-right font-medium">Dist.</th>
+            <th className="px-2 text-right font-medium">Racha</th>
+            <th className="px-2 text-right font-medium">Intens.</th>
+            <th className="px-2 text-right font-medium">Corto</th>
+            <th className="px-2 text-right font-medium">vs. media</th>
+            <th className="px-2 text-right font-medium">Vol. vs. normal</th>
+            {diario ? <th className="px-2 text-right font-medium">Gap</th> : null}
+            {estudio.horizontes.map((h) => (
+              <th key={h} className="px-2 text-right font-medium">
+                {h} {u.corta}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody className="font-mono">
-          {umbrales.map((t) => (
-            <tr key={t} className="border-b border-border/70">
-              <td className="py-1.5 font-sans">±{pct(t, 0, false)}</td>
-              <td className="text-right text-danger">{prob(pDe(maes, -t, true))}</td>
-              <td className="text-right text-success">{prob(pDe(mfes, t, false))}</td>
+          {analogos.hoy ? (
+            <tr className="border-b border-border bg-signal/10">
+              <td className="py-1.5 pr-2 font-sans font-semibold text-signal">Hoy</td>
+              <td className="px-2 text-right">—</td>
+              {celdas(analogos.hoy)}
+              {estudio.horizontes.map((h) => (
+                <td key={h} className="px-2 text-right text-tenue">
+                  ?
+                </td>
+              ))}
+            </tr>
+          ) : null}
+          {analogos.lista.map((a) => (
+            <tr key={a.i} className="border-b border-border/70">
+              <td className="py-1.5 pr-2">{fecha(a.fecha)}</td>
+              <td className="px-2 text-right text-muted">{num(a.distancia, 2)}</td>
+              {celdas(a.rasgos)}
+              {estudio.horizontes.map((h) => (
+                <td key={h} className={`px-2 text-right ${colorSigno(a.fwd[h])}`}>
+                  {pct(a.fwd[h])}
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>
@@ -821,13 +902,15 @@ function Recorrido({ estudio }: { estudio: EstudioRacha }) {
 function TablaOcurrencias({ estudio, todas }: { estudio: EstudioRacha; todas: boolean }) {
   const u = UNIDAD[estudio.frecuencia];
   const filas = todas ? estudio.ocurrencias : estudio.ocurrencias.slice(0, 25);
+  const marcar = estudio.zActual !== null;
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[900px] text-sm">
+      <table className="w-full min-w-[960px] text-sm">
         <thead>
           <tr className="border-b border-border text-[11px] uppercase tracking-wider text-muted">
             <th className="py-2 pr-2 text-left font-medium">Fecha</th>
             <th className="px-2 text-right font-medium">Hasta {estudio.k}</th>
+            <th className="px-2 text-right font-medium">Intens.</th>
             <th className="px-2 text-right font-medium">Largo final</th>
             <th className="px-2 text-right font-medium">Racha completa</th>
             {estudio.horizontes.map((h) => (
@@ -841,12 +924,13 @@ function TablaOcurrencias({ estudio, todas }: { estudio: EstudioRacha; todas: bo
         </thead>
         <tbody className="font-mono">
           {filas.map((o) => (
-            <tr key={o.i} className={`border-b border-border/70 ${o.parecida && estudio.variacionActual !== null ? "bg-signal/5" : ""}`}>
+            <tr key={o.i} className={`border-b border-border/70 ${o.parecida && marcar ? "bg-signal/5" : ""}`}>
               <td className="py-1.5 pr-2">
                 {fecha(o.fecha)}
-                {o.parecida && estudio.variacionActual !== null ? <span className="ml-1.5 text-[10px] text-signal">parecida</span> : null}
+                {o.parecida && marcar ? <span className="ml-1.5 text-[10px] text-signal">parecida</span> : null}
               </td>
               <td className={`px-2 text-right ${colorSigno(o.variacionK)}`}>{pct(o.variacionK)}</td>
+              <td className="px-2 text-right">{sigma(o.zK)}</td>
               <td className="px-2 text-right">{o.largoFinal}</td>
               <td className={`px-2 text-right ${colorSigno(o.variacionFinal)}`}>{pct(o.variacionFinal)}</td>
               {estudio.horizontes.map((h) => (
